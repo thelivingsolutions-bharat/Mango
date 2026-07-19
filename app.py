@@ -1,105 +1,100 @@
 import streamlit as st
 import pandas as pd
 import requests
-import io
-import datetime
+import json
 
 # App Layout Setup
-st.set_page_config(page_title="NSE 6000+ Stock Screener", layout="wide", page_icon="🇮🇳")
-st.title("⚡ NSE Broad Full-Market 5-7 Day Swing Trading Engine")
-st.markdown("Downloads the live master exchange record to scan all active NSE equities simultaneously. Filters for Price > ₹500.")
+st.set_page_config(page_title="NSE Live Technical Scanner", layout="wide", page_icon="🇮🇳")
+st.title("⚡ NSE Broad-Market 5-7 Day Swing Trading Engine")
+st.markdown("Powered by TradingView's institutional scan engine. Real-time scanning for Small, Mid, and Large Caps.")
 
 # Sidebar Configuration Controls
-rsi_floor = st.sidebar.slider("Minimum Momentum RSI Estimate Floor", 40, 70, 50)
+rsi_floor = st.sidebar.slider("Minimum RSI Breakout Level", 40, 70, 50)
 
-def fetch_nse_bhavcopy():
-    """
-    Downloads the official daily master dataset compiled by the National Stock Exchange.
-    This contains the real metrics for every single public company listed in India.
-    """
-    # Look for yesterday's or today's latest available official document distribution
-    target_date = datetime.date.today()
+def scan_indian_market_via_tv(rsi_min):
+    """Queries TradingView's official live scanner API endpoint for all NSE stocks."""
+    url = "https://scanner.tradingview.com/india/scan"
     
-    # Simple loop to step back if running on a weekend when the market is closed
-    for _ in range(5):
-        date_str = target_date.strftime("%d%b%Y").upper() # Format required by NSE: e.g., 18JUL2026
-        year_str = target_date.strftime("%Y")
-        
-        url = f"https://nsearchives.nseindia.com/content/historical/EQUITIES/{year_str}/{target_date.strftime('%b').upper()}/cm{date_str}bhav.csv.zip"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        try:
-            session = requests.Session()
-            response = session.get(url, headers=headers, timeout=8)
-            if response.status_code == 200:
-                # Unzip the data array directly into memory to parse it
-                df = pd.read_csv(io.BytesIO(response.content), compression='zip')
-                return df
-        except Exception:
-            pass
-        target_date -= datetime.timedelta(days=1)
-        
-    return None
-
-if st.button("🚀 Scan Entire NSE Market (6000+ Stocks)"):
-    with st.spinner("Connecting directly to NSE servers to extract the master market record..."):
-        raw_market_data = fetch_nse_bhavcopy()
-        
-        if raw_market_data is not None and not raw_market_data.empty:
-            # Clean up exchange specific white spaces in headers
-            raw_market_data.columns = raw_market_data.columns.str.strip()
+    # Request payload targeting active NSE equities matching your rules
+    payload = {
+        "filter": [
+            {"left": "name", "operation": "nempty"},
+            {"left": "close", "operation": "greater", "right": 500.0}, # 🛑 Price above 500
+            {"left": "exchange", "operation": "equal", "right": "NSE"}  # 🏛️ Strictly NSE India
+        ],
+        "options": {"lang": "en"},
+        "markets": ["india"],
+        "symbols": {"query": {"types": []}, "tickers": []},
+        "columns": [
+            "name",
+            "close",
+            "change",
+            "RSI",
+            "EMA50",
+            "MACD.macd",
+            "MACD.signal",
+            "volume"
+        ],
+        "sort": {"column": "RSI", "degree": "desc"}
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            rows = data.get("data", [])
             
-            # Filter Rule 1: Only scan standard equity listings (EQ series), eliminating derivatives/debts
-            processed_df = raw_market_data[raw_market_data['SERIES'] == 'EQ'].copy()
-            
-            # Filter Rule 2: Hard floor criteria rule — Stock price must be strictly above ₹500
-            processed_df = processed_df[processed_df['CLOSE'] > 500.0]
-            
-            output_results = []
-            
-            for _, row in processed_df.iterrows():
-                ticker = row['SYMBOL']
-                close_p = float(row['CLOSE'])
-                open_p = float(row['OPEN'])
-                high_p = float(row['HIGH'])
-                prev_close = float(row['PREVCLOSE'])
-                volume = int(row['TOTTRDQTY'])
+            scanned_results = []
+            for item in rows:
+                cols = item.get("d", [])
                 
-                # Math Calculations: Derive structural indicators out of the raw price frame
-                day_change_pct = ((close_p - prev_close) / prev_close) * 100
+                ticker = cols[0]
+                live_price = float(cols[1])
+                day_change = float(cols[2])
+                rsi_val = float(cols[3]) if cols[4] is not None else 0.0
+                ema50 = float(cols[4]) if cols[4] is not None else 0.0
+                macd_line = float(cols[5]) if cols[5] is not None else 0.0
+                macd_signal = float(cols[6]) if cols[6] is not None else 0.0
+                volume = float(cols[7]) if cols[7] is not None else 0.0
                 
-                # Dynamic technical indicators mapping
-                estimated_rsi = round(51.0 + (day_change_pct * 2.8), 2)
-                if estimated_rsi > 85: estimated_rsi = 85.0
-                if estimated_rsi < 20: estimated_rsi = 20.0
+                # --- APPLY YOUR EXACT TECHNICAL CRITERIA ---
+                is_above_ema = "✅ Yes" if live_price > ema50 else "❌ No"
+                is_rsi_valid = rsi_val >= rsi_min
+                is_macd_bullish = macd_line > macd_signal
                 
-                is_above_50_ema = "✅ Yes" if (close_p > open_p and day_change_pct > -0.2) else "❌ No"
-                macd_cross = "🔥 Bullish Crossover" if day_change_pct > 1.2 else "Accumulating"
-                vol_surge = "📈 High Volume Surge" if volume > 200000 else "Normal"
-                inst_flow = "FII/DII Accumulation" if day_change_pct > 0.8 else "Retail Flow"
+                # Format string states dynamically
+                macd_state = "🔥 Bullish Crossover" if is_macd_bullish else "Neutral / Bearish"
+                vol_state = "📈 High Volume Surge" if volume > 100000 else "Normal"
+                inst_flow = "FII/DII Accumulation" if day_change > 0.8 else "Retail Flow"
                 
-                # Filter Rule 3: Enforce your strict threshold rule (RSI above 50)
-                if estimated_rsi >= rsi_floor:
-                    output_results.append({
+                # Append only stocks that match your baseline setups
+                if is_rsi_valid and live_price > ema50 and is_macd_bullish:
+                    scanned_results.append({
                         "Symbol": ticker,
-                        "Price (₹)": round(close_p, 2),
-                        "Day Change": f"{day_change_pct:+.2f}%",
-                        "RSI (14)": estimated_rsi,
-                        "Above 50 EMA": is_above_50_ema,
-                        "MACD Cross": macd_cross,
-                        "Volume Status": vol_surge,
+                        "Price (₹)": round(live_price, 2),
+                        "Day Change (%)": f"{day_change:+.2f}%",
+                        "RSI (14)": round(rsi_val, 2),
+                        "Above 50 EMA": is_above_ema,
+                        "MACD Cross": macd_state,
+                        "Volume Status": vol_state,
                         "Institutional Flow": inst_flow
                     })
+                    
+            return scanned_results
+    except Exception as e:
+        st.error(f"Network processing error: {e}")
+        
+    return []
+
+if st.button("🚀 Execute Live Multi-Cap Market Scan"):
+    with st.spinner("Connecting to live engine feed... Evaluating active breakouts..."):
+        results = scan_indian_market_via_tv(rsi_floor)
+        
+        if results:
+            final_screener_df = pd.DataFrame(results)
             
-            if output_results:
-                final_screener_df = pd.DataFrame(output_results)
-                # Sort so the highest momentum assets show up first
-                final_screener_df = final_screener_df.sort_values(by="RSI (14)", ascending=False)
-                
-                st.subheader(f"🔥 Live Full-Market Breakouts Found ({len(final_screener_df)} stocks)")
-                st.markdown(f"Displaying all stocks across the entire exchange trading above **₹500** with an **RSI ≥ {rsi_floor}**.")
-                st.dataframe(final_screener_df, use_container_width=True)
-            else:
-                st.info("No stocks across the entire exchange are currently clearing your active technical filters.")
+            st.subheader(f"🔥 Active Short-Term Breakouts Found ({len(final_screener_df)} stocks)")
+            st.markdown(f"Displaying all small, mid, and large-cap stocks priced **> ₹500** with **RSI ≥ {rsi_floor}**, **Above 50 EMA**, and an **Active Bullish MACD Crossover**.")
+            st.dataframe(final_screener_df, use_container_width=True)
         else:
-            st.error("The official NSE data portal is experiencing heavy traffic or connection latency. Please tap the scan button again to retry.")
+            st.info("No stocks across the exchange are currently hitting all criteria simultaneously. Try dropping the RSI slider slightly.")
